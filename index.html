@@ -9,6 +9,9 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<!-- Firebase Auth SDK -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 <!-- Native BarcodeDetector API used — no external scanner library needed -->
 <script>
 // ═══════════════════════════════════════════════════════
@@ -18,6 +21,29 @@ const FB_PROJECT = "supermarket-destruction";
 const FB_KEY     = "AIzaSyB65II4-aNzTS2a7KyQE_6DVvz1GehCg2s";
 const FB_BASE    = `https://firestore.googleapis.com/v1/projects/${FB_PROJECT}/databases/(default)/documents`;
 
+// ── Firebase Auth ──────────────────────────────────────────
+firebase.initializeApp({
+  apiKey:            "AIzaSyB65II4-aNzTS2a7KyQE_6DVvz1GehCg2s",
+  authDomain:        "supermarket-destruction.firebaseapp.com",
+  projectId:         "supermarket-destruction",
+  storageBucket:     "supermarket-destruction.firebasestorage.app",
+  messagingSenderId: "810955424797",
+  appId:             "1:810955424797:web:3f408a1175aad4e2a9f2f4"
+});
+const _fbAuth = firebase.auth();
+let _fbToken = null;
+_fbAuth.onIdTokenChanged(async user => {
+  _fbToken = user ? await user.getIdToken() : null;
+});
+async function _getAuthHeaders() {
+  if (_fbAuth.currentUser) {
+    try { _fbToken = await _fbAuth.currentUser.getIdToken(); } catch(e) {}
+  }
+  return _fbToken
+    ? { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + _fbToken }
+    : { 'Content-Type': 'application/json' };
+}
+// ───────────────────────────────────────────────────────────
 
 function toFS(obj) {
   const fields = {};
@@ -61,15 +87,17 @@ function fromFS(doc) {
 }
 
 async function fsAdd(col,data) {
-  const r = await fetch(`${FB_BASE}/${col}?key=${FB_KEY}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(toFS(data))});
+  const h = await _getAuthHeaders();
+  const r = await fetch(`${FB_BASE}/${col}?key=${FB_KEY}`,{method:'POST',headers:h,body:JSON.stringify(toFS(data))});
   if (!r.ok) throw new Error(await r.text());
   return fromFS(await r.json());
 }
 async function fsGetAll(col) {
+  const h = await _getAuthHeaders();
   let docs = [], pageToken = '';
   do {
     const url = `${FB_BASE}/${col}?key=${FB_KEY}&pageSize=300${pageToken?'&pageToken='+encodeURIComponent(pageToken):''}`;
-    const r = await fetch(url);
+    const r = await fetch(url, {headers: h});
     if (!r.ok) throw new Error(await r.text());
     const d = await r.json();
     docs = docs.concat((d.documents||[]).map(fromFS));
@@ -78,18 +106,21 @@ async function fsGetAll(col) {
   return docs.sort((a,b)=>a.ts>b.ts?1:-1);
 }
 async function fsDelete(col,id) {
-  const r = await fetch(`${FB_BASE}/${col}/${id}?key=${FB_KEY}`,{method:'DELETE'});
+  const h = await _getAuthHeaders();
+  const r = await fetch(`${FB_BASE}/${col}/${id}?key=${FB_KEY}`,{method:'DELETE',headers:h});
   if (!r.ok) throw new Error(await r.text());
 }
 async function fsPatch(col,id,data) {
+  const h = await _getAuthHeaders();
   const fields = toFS(data).fields;
   const mask = Object.keys(fields).map(k=>`updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&');
-  const r = await fetch(`${FB_BASE}/${col}/${id}?key=${FB_KEY}&${mask}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({fields})});
+  const r = await fetch(`${FB_BASE}/${col}/${id}?key=${FB_KEY}&${mask}`,{method:'PATCH',headers:h,body:JSON.stringify({fields})});
   if (!r.ok) throw new Error(await r.text());
   return fromFS(await r.json());
 }
 async function fsGet(col,id) {
-  const r = await fetch(`${FB_BASE}/${col}/${id}?key=${FB_KEY}`);
+  const h = await _getAuthHeaders();
+  const r = await fetch(`${FB_BASE}/${col}/${id}?key=${FB_KEY}`,{headers:h});
   if (r.status === 404) return null;
   if (!r.ok) throw new Error(await r.text());
   return fromFS(await r.json());
@@ -4118,6 +4149,7 @@ async function submitLogin() {
         fsPatch('admins', candidate._id, { passwordHash: nh, passwordSalt: ns }).catch(()=>{});
       }
       att.count = 0; att.until = 0;
+      await _fbAuth.signInAnonymously().catch(()=>{});
       loginSetAdminSession(candidate);
     } else {
       const drivers = await fsGetAll('drivers');
@@ -4134,6 +4166,7 @@ async function submitLogin() {
         fsPatch('drivers', candidate._id, { passwordHash: nh, passwordSalt: ns }).catch(()=>{});
       }
       att.count = 0; att.until = 0;
+      await _fbAuth.signInAnonymously().catch(()=>{});
       loginSetDriverSession(candidate);
     }
   } catch(e) {
@@ -4346,6 +4379,8 @@ async function submitSetupAdmin() {
 }
 
 function logout() {
+  _fbAuth.signOut().catch(()=>{});
+  _fbToken = null;
   currentSession = null;
   adminUnlocked  = false;
   _planPageReady = false;
